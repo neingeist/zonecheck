@@ -1,0 +1,82 @@
+#!/usr/bin/perl
+use 5.010;
+use strict;
+use warnings;
+
+use autodie;
+use Carp::Assert;
+use Data::Dumper;
+use Readonly;
+
+use Net::DNS;
+use Socket;
+
+Readonly my $NAMESERVER => '127.0.0.1';
+Readonly my $ZONE       => 'bl0rg.net';
+Readonly my $MINTTL     => 3600;
+
+my $res = Net::DNS::Resolver->new(
+  nameservers => [$NAMESERVER],
+);
+
+my @zone = $res->axfr($ZONE);
+
+if (@zone) {
+  foreach my $rr (@zone) {
+    if ($rr->type eq 'A' or $rr->type eq 'AAAA') {
+      check_ptr($rr);
+    }
+    check_ttl($rr);
+  }
+} else {
+  say 'Zone transfer failed: ', $res->errorstring;
+  exit 2;
+}
+
+sub check_ptr {
+  my ($rr) = @_;
+
+  my $name = $rr->name;
+  my $type = $rr->type;
+
+  my @answer = $res->query($name, $type)->answer();
+  assert($answer[0]->type eq $type);
+  my $ip = $answer[0]->address;
+
+  my $packet = $res->query($ip);
+  if (!$packet) {
+    say "W:  $name => $ip => ", $res->errorstring;
+    return;
+  }
+  @answer = $packet->answer();
+  my $ptr_name = $answer[0]->ptrdname;
+  if ($ptr_name eq $name) {
+    say "OK: $name <=> $ip";
+    return;
+  }
+
+  @answer = $res->query($ptr_name, $type)->answer();
+  assert($answer[0]->type eq $type);
+  my $ptr_ip = $answer[0]->address;
+
+  if ($ip eq $ptr_ip) {
+    say "OK: $name => $ip <=> $ptr_name";
+  } else {
+    say "E:  $name => $ip => $ptr_name => $ptr_ip";
+  }
+
+  return;
+}
+
+sub check_ttl {
+  my ($rr) = @_;
+
+  my $name = $rr->name;
+  my $ttl = $rr->ttl;
+
+  if ($ttl < $MINTTL) {
+    say "W:  $name has a TTL of $ttl";
+  }
+
+  return;
+}
